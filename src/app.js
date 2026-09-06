@@ -1,29 +1,22 @@
 /**
  * Dexo2Scan App
  * - Capacitor Camera for capture
- * - @jcesarmobile/capacitor-ocr (ML Kit on Android, Vision on iOS)
+ * - @capacitor-community/image-to-text (ML Kit on Android, Vision on iOS)
  * - Simple rule-based + LLM-style prompt ready invoice parser → JSON
  * - IndexedDB for persistence
- *
- * For full local LLM (Gemma / Qwen class):
- *   Install @capgo/capacitor-llm and load a small .litertlm or GGUF model.
- *   See README for integration notes.
  */
 
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 
-// OCR plugin (works on device; falls back on web)
 let Ocr = null;
 try {
-  // Dynamic import style for Capacitor plugin
-  const mod = await import('@jcesarmobile/capacitor-ocr');
+  const mod = await import('@capacitor-community/image-to-text');
   Ocr = mod.Ocr || mod.default || mod;
 } catch (e) {
   console.warn('OCR plugin not available (web or not installed):', e);
 }
 
-// ---------- IndexedDB helpers ----------
 const DB_NAME = 'Dexo2ScanDB';
 const STORE = 'invoices';
 const DB_VERSION = 1;
@@ -49,10 +42,7 @@ async function saveInvoice(record) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     const store = tx.objectStore(STORE);
-    const req = store.add({
-      ...record,
-      savedAt: new Date().toISOString()
-    });
+    const req = store.add({ ...record, savedAt: new Date().toISOString() });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -80,18 +70,9 @@ async function clearInvoices() {
   });
 }
 
-// ---------- Invoice understanding (rule-based + ready for local LLM) ----------
-/**
- * This is a lightweight, offline parser that mimics what a small Qwen/Gemma
- * model would do: extract key fields from OCR text into structured JSON.
- * Replace the body of this function with a call to @capgo/capacitor-llm
- * or MediaPipe / WebLLM when you add a local model.
- */
 function extractInvoiceJSON(rawText) {
   const text = (rawText || '').replace(/\r/g, '');
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  // Common patterns
   const amountRegex = /(?:total|amount|grand\s*total|balance\s*due|sum)[^\d]*([₹$€£]?\s*[\d,]+\.?\d*)/i;
   const dateRegex = /(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})|(\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})/;
   const invoiceNoRegex = /(?:invoice\s*(?:no|number|#|num)?|inv\.?\s*#?|bill\s*no)[:\s#]*([A-Z0-9\-\/]+)/i;
@@ -131,20 +112,14 @@ function extractInvoiceJSON(rawText) {
     confidence: 'rule-based',
     extracted_at: new Date().toISOString()
   };
-
-  Object.keys(result).forEach(k => {
-    if (result[k] === null || result[k] === '') delete result[k];
-  });
-
+  Object.keys(result).forEach(k => { if (result[k] === null || result[k] === '') delete result[k]; });
   return result;
 }
 
 async function extractWithLocalLLM(rawText) {
-  // Currently falls back to rule-based. Swap implementation here for real local LLM.
   return extractInvoiceJSON(rawText);
 }
 
-// ---------- UI & flow ----------
 const $ = (sel) => document.querySelector(sel);
 const loading = $('#loading');
 let currentImage = null;
@@ -181,33 +156,22 @@ async function runOCRAndExtract() {
   showLoading(true);
   try {
     let rawText = '';
-
     if (Ocr && Capacitor.isNativePlatform()) {
-      const imagePath = currentImage.path || currentImage.webPath;
-      const result = await Ocr.process({ image: imagePath });
-      if (result && result.results) {
-        rawText = result.results.map(r => r.text).join('\n');
-      } else if (result && result.text) {
-        rawText = result.text;
+      const filename = currentImage.path || currentImage.webPath;
+      const data = await Ocr.detectText({ filename });
+      if (data && data.textDetections) {
+        rawText = data.textDetections.map(d => d.text).join('\n');
+      } else if (data && data.text) {
+        rawText = data.text;
       } else {
-        rawText = JSON.stringify(result);
+        rawText = JSON.stringify(data);
       }
     } else {
-      rawText = 'OCR plugin requires native platform (Android/iOS).\n\n' +
-                'On web you can integrate Tesseract.js for demo.\n\n' +
-                'Sample invoice text for testing:\n' +
-                'ACME Supplies Pvt Ltd\nInvoice No: INV-2026-0042\nDate: 05/09/2026\n' +
-                'Item A  1200.00\nItem B  850.50\nGST 18%  369.09\nTotal Amount: ₹2419.59\n' +
-                'GSTIN: 27AABCU9603R1ZM';
+      rawText = 'OCR plugin requires native platform (Android/iOS).\n\nSample invoice text for testing:\nACME Supplies Pvt Ltd\nInvoice No: INV-2026-0042\nDate: 05/09/2026\nItem A  1200.00\nItem B  850.50\nGST 18%  369.09\nTotal Amount: ₹2419.59\nGSTIN: 27AABCU9603R1ZM';
     }
-
     $('#ocr-text').textContent = rawText || '(no text detected)';
     const extracted = await extractWithLocalLLM(rawText);
-    lastExtracted = {
-      imagePath: currentImage.path || currentImage.webPath,
-      ocrText: rawText,
-      extracted
-    };
+    lastExtracted = { imagePath: currentImage.path || currentImage.webPath, ocrText: rawText, extracted };
     $('#json-output').textContent = JSON.stringify(extracted, null, 2);
     $('#result-section').classList.remove('hidden');
   } catch (err) {
@@ -238,18 +202,10 @@ async function renderHistory() {
   }
   list.innerHTML = items.map(item => {
     const e = item.extracted || {};
-    return `
-      <div class="history-item" data-id="${item.id}">
-        <strong>${e.vendor || 'Unknown'}</strong>
-        <div class="meta">
-          ${e.invoice_number || '—'} · ${e.date || '—'} · ${e.total_amount || '—'}
-          <br><small>${new Date(item.savedAt).toLocaleString()}</small>
-        </div>
-      </div>`;
+    return `<div class="history-item" data-id="${item.id}"><strong>${e.vendor || 'Unknown'}</strong><div class="meta">${e.invoice_number || '—'} · ${e.date || '—'} · ${e.total_amount || '—'}<br><small>${new Date(item.savedAt).toLocaleString()}</small></div></div>`;
   }).join('');
 }
 
-// Event listeners
 $('#btn-camera').addEventListener('click', () => takePhoto(CameraSource.Camera));
 $('#btn-gallery').addEventListener('click', () => takePhoto(CameraSource.Photos));
 $('#btn-process').addEventListener('click', runOCRAndExtract);
@@ -261,6 +217,5 @@ $('#btn-clear').addEventListener('click', async () => {
   }
 });
 
-// Init
 renderHistory();
 console.log('Dexo2Scan ready. Platform:', Capacitor.getPlatform());

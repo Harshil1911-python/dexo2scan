@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Dexo2Scan</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="module" src="https://unpkg.com/@capacitor/core@6/dist/capacitor.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>📄 Dexo2Scan</h1>
+      <p class="subtitle">Scan paper invoices → OCR → structured JSON</p>
+    </header>
+
+    <main>
+      <section class="actions">
+        <button id="btn-camera" class="btn primary">
+          📷 Scan with Camera
+        </button>
+        <button id="btn-gallery" class="btn secondary">
+          🖼️ Pick from Gallery
+        </button>
+      </section>
+
+      <section id="preview-section" class="hidden">
+        <h2>Preview</h2>
+        <img id="preview-img" alt="Scanned bill" />
+        <button id="btn-process" class="btn primary">🔍 Run OCR & Extract</button>
+      </section>
+
+      <section id="result-section" class="hidden">
+        <h2>Extracted Invoice</h2>
+        <div id="ocr-raw" class="card">
+          <h3>Raw OCR Text</h3>
+          <pre id="ocr-text"></pre>
+        </div>
+        <div id="json-result" class="card">
+          <h3>Structured JSON</h3>
+          <pre id="json-output"></pre>
+        </div>
+        <button id="btn-save" class="btn primary">💾 Save to IndexedDB</button>
+      </section>
+
+      <section id="history-section">
+        <h2>Saved Invoices</h2>
+        <div id="history-list"></div>
+        <button id="btn-clear" class="btn danger small">Clear All</button>
+      </section>
+    </main>
+
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Processing…</p>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

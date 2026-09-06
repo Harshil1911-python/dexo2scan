@@ -38,12 +38,52 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Add Android platform (if missing)
+      - name: Add Android platform + sync
         run: |
           if [ ! -d "android" ]; then
             npx cap add android
           fi
           npx cap sync android
+
+      - name: Patch AndroidManifest for Camera & Gallery
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            # Add camera / media permissions if missing
+            if ! grep -q 'android.permission.CAMERA' "$MANIFEST"; then
+              sed -i 's|<manifest |<manifest |' "$MANIFEST"
+              # Insert permissions right after <manifest ...>
+              python3 << 'PY'
+          import re
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          perms = """
+      <uses-permission android:name=\"android.permission.CAMERA\" />
+      <uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\" />
+      <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />
+      <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />
+          """
+          if "android.permission.CAMERA" not in content:
+              content = re.sub(
+                  r"(<manifest[^>]*>)",
+                  r"\1\n" + perms,
+                  content,
+                  count=1,
+              )
+              with open(path, "w") as f:
+                  f.write(content)
+              print("Permissions injected into AndroidManifest.xml")
+          else:
+              print("CAMERA permission already present")
+          PY
+            fi
+            echo "--- AndroidManifest (head) ---"
+            head -40 "$MANIFEST"
+          else
+            echo "WARNING: AndroidManifest.xml not found"
+            ls -la android/app/src/main/ || true
+          fi
 
       - name: Build Debug APK
         run: |

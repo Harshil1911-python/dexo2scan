@@ -1,0 +1,15 @@
+node_modules/
+www/
+android/
+ios/
+dist/
+.DS_Store
+*.log
+*.apk
+*.aab
+.idea/
+.vscode/
+*.jks
+*.keystore
+.env
+.local/

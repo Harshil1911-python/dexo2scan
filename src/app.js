@@ -6,35 +6,53 @@
 (function () {
   'use strict';
 
-  // ---------- Capacitor helpers ----------
   function getCapacitor() {
     return window.Capacitor || null;
   }
 
   function getPlugin(name) {
-    const Cap = getCapacitor();
+    var Cap = getCapacitor();
     if (!Cap || !Cap.Plugins) return null;
     return Cap.Plugins[name] || null;
   }
 
+  /** Try several known OCR plugin registration names */
+  function getOcrPlugin() {
+    var names = ['Ocr', 'CapacitorOcr', 'ImageToText', 'CapacitorCommunityImageToText', 'TextRecognition'];
+    for (var i = 0; i < names.length; i++) {
+      var p = getPlugin(names[i]);
+      if (p) return p;
+    }
+    // Last resort: scan all plugins for detectText / process
+    var Cap = getCapacitor();
+    if (Cap && Cap.Plugins) {
+      var keys = Object.keys(Cap.Plugins);
+      for (var j = 0; j < keys.length; j++) {
+        var pl = Cap.Plugins[keys[j]];
+        if (pl && (typeof pl.detectText === 'function' || typeof pl.process === 'function')) {
+          return pl;
+        }
+      }
+    }
+    return null;
+  }
+
   function isNative() {
-    const Cap = getCapacitor();
+    var Cap = getCapacitor();
     return !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
   }
 
   function platform() {
-    const Cap = getCapacitor();
+    var Cap = getCapacitor();
     return (Cap && Cap.getPlatform && Cap.getPlatform()) || 'web';
   }
 
-  // Camera result / source enums (same values as @capacitor/camera)
-  const CameraResultType = { Uri: 'uri', Base64: 'base64', DataUrl: 'dataUrl' };
-  const CameraSource = { Prompt: 'PROMPT', Camera: 'CAMERA', Photos: 'PHOTOS' };
+  var CameraResultType = { Uri: 'uri', Base64: 'base64', DataUrl: 'dataUrl' };
+  var CameraSource = { Prompt: 'PROMPT', Camera: 'CAMERA', Photos: 'PHOTOS' };
 
-  // ---------- IndexedDB ----------
-  const DB_NAME = 'Dexo2ScanDB';
-  const STORE = 'invoices';
-  const DB_VERSION = 1;
+  var DB_NAME = 'Dexo2ScanDB';
+  var STORE = 'invoices';
+  var DB_VERSION = 1;
 
   function openDB() {
     return new Promise(function (resolve, reject) {
@@ -88,7 +106,6 @@
     });
   }
 
-  // ---------- Invoice parser ----------
   function extractInvoiceJSON(rawText) {
     var text = (rawText || '').replace(/\r/g, '');
     var lines = text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
@@ -140,7 +157,6 @@
     return result;
   }
 
-  // ---------- UI ----------
   function $(sel) { return document.querySelector(sel); }
   var loading = $('#loading');
   var currentImage = null;
@@ -157,27 +173,22 @@
     alert(msg);
   }
 
-  /** Request camera + photos permissions */
   async function ensureCameraPermissions() {
     var Camera = getPlugin('Camera');
     if (!Camera) {
-      throw new Error('Camera plugin not available. Rebuild the app with npx cap sync.');
+      throw new Error('Camera plugin not available. Rebuild with npx cap sync.');
     }
-
-    // checkPermissions / requestPermissions available on native
     if (typeof Camera.checkPermissions === 'function') {
       var status = await Camera.checkPermissions();
       var needRequest =
         (status.camera && status.camera !== 'granted' && status.camera !== 'limited') ||
         (status.photos && status.photos !== 'granted' && status.photos !== 'limited');
-
       if (needRequest && typeof Camera.requestPermissions === 'function') {
         status = await Camera.requestPermissions({ permissions: ['camera', 'photos'] });
       }
-
       if (status.camera === 'denied' || status.photos === 'denied') {
         throw new Error(
-          'Camera / Photos permission denied. Open Android Settings → Apps → Dexo2Scan → Permissions and allow Camera & Photos.'
+          'Permission denied. Settings → Apps → Dexo2Scan → allow Camera & Photos.'
         );
       }
     }
@@ -187,9 +198,7 @@
   async function takePhoto(source) {
     try {
       showLoading(true);
-
       var Camera = await ensureCameraPermissions();
-
       var photo = await Camera.getPhoto({
         quality: 90,
         allowEditing: false,
@@ -198,26 +207,15 @@
         correctOrientation: true,
         saveToGallery: false
       });
-
       currentImage = photo;
-
-      // Prefer webPath for <img src>; fallback to path
-      var src = photo.webPath || photo.path || '';
-      if (!src && photo.dataUrl) src = photo.dataUrl;
-
-      if (!src) {
-        throw new Error('No image path returned from camera/gallery.');
-      }
-
+      var src = photo.webPath || photo.path || photo.dataUrl || '';
+      if (!src) throw new Error('No image path returned.');
       $('#preview-img').src = src;
       $('#preview-section').classList.remove('hidden');
       $('#result-section').classList.add('hidden');
     } catch (err) {
       var msg = (err && (err.message || err.errorMessage)) || String(err);
-      // User cancelled – don't show scary alert
-      if (/cancel|user cancelled|User cancelled/i.test(msg)) {
-        console.log('User cancelled camera/gallery');
-      } else {
+      if (!/cancel|user cancelled|User cancelled/i.test(msg)) {
         showError('Camera/Gallery error: ' + msg);
       }
     } finally {
@@ -233,37 +231,56 @@
     showLoading(true);
     try {
       var rawText = '';
-      var Ocr = getPlugin('Ocr') || getPlugin('ImageToText') || getPlugin('CapacitorCommunityImageToText');
+      var Ocr = getOcrPlugin();
+      var pluginNames = getCapacitor() && getCapacitor().Plugins
+        ? Object.keys(getCapacitor().Plugins).join(', ')
+        : '(none)';
+
+      console.log('OCR plugin found:', !!Ocr, '| All plugins:', pluginNames);
 
       if (Ocr && isNative()) {
-        var filename = currentImage.path || currentImage.webPath;
-        var data;
-        if (typeof Ocr.detectText === 'function') {
-          data = await Ocr.detectText({ filename: filename });
-        } else if (typeof Ocr.process === 'function') {
-          data = await Ocr.process({ image: filename });
+        // Prefer filesystem path for native OCR; webPath is for <img>
+        var imageRef = currentImage.path || currentImage.webPath || '';
+        if (!imageRef) throw new Error('No image path for OCR.');
+
+        var data = null;
+
+        // @jcesarmobile/capacitor-ocr → process({ image })
+        if (typeof Ocr.process === 'function') {
+          data = await Ocr.process({ image: imageRef });
+        }
+        // @capacitor-community/image-to-text → detectText({ filename })
+        else if (typeof Ocr.detectText === 'function') {
+          data = await Ocr.detectText({ filename: imageRef });
+        }
+        else {
+          throw new Error('OCR plugin has no process/detectText method.');
         }
 
-        if (data && data.textDetections) {
-          rawText = data.textDetections.map(function (d) { return d.text; }).join('\n');
-        } else if (data && data.results) {
+        if (data && data.results && data.results.length) {
           rawText = data.results.map(function (r) { return r.text; }).join('\n');
-        } else if (data && data.text) {
-          rawText = typeof data.text === 'string' ? data.text : (data.text || []).join('\n');
+        } else if (data && data.textDetections && data.textDetections.length) {
+          rawText = data.textDetections.map(function (d) { return d.text; }).join('\n');
+        } else if (data && typeof data.text === 'string') {
+          rawText = data.text;
+        } else if (data && Array.isArray(data.text)) {
+          rawText = data.text.join('\n');
         } else if (data) {
           rawText = JSON.stringify(data);
         }
+
+        if (!rawText || !String(rawText).trim()) {
+          rawText = '(OCR ran but no text found on this image. Try a clearer photo.)';
+        }
       } else {
-        // Fallback sample so UI still works if OCR plugin name differs
         rawText =
-          'OCR plugin not detected on this build.\n\n' +
-          'Sample invoice text:\n' +
-          'ACME Supplies Pvt Ltd\nInvoice No: INV-2026-0042\nDate: 05/09/2026\n' +
-          'Item A  1200.00\nItem B  850.50\nGST 18%  369.09\nTotal Amount: ₹2419.59\n' +
-          'GSTIN: 27AABCU9603R1ZM';
+          'OCR plugin not detected.\n\n' +
+          'Platform: ' + platform() + ' | Native: ' + isNative() + '\n' +
+          'Plugins loaded: ' + pluginNames + '\n\n' +
+          'Reinstall the latest APK from GitHub Actions.';
       }
 
-      $('#ocr-text').textContent = rawText || '(no text detected)';
+      $('#ocr-text').textContent = rawText;
       var extracted = extractInvoiceJSON(rawText);
       lastExtracted = {
         imagePath: currentImage.path || currentImage.webPath,
@@ -273,7 +290,7 @@
       $('#json-output').textContent = JSON.stringify(extracted, null, 2);
       $('#result-section').classList.remove('hidden');
     } catch (err) {
-      showError('OCR / Extract error: ' + ((err && err.message) || err));
+      showError('OCR error: ' + ((err && err.message) || err));
     } finally {
       showLoading(false);
     }
@@ -321,7 +338,6 @@
     var btnProc = $('#btn-process');
     var btnSave = $('#btn-save');
     var btnClear = $('#btn-clear');
-
     if (btnCam) btnCam.addEventListener('click', function () { takePhoto(CameraSource.Camera); });
     if (btnGal) btnGal.addEventListener('click', function () { takePhoto(CameraSource.Photos); });
     if (btnProc) btnProc.addEventListener('click', runOCRAndExtract);
@@ -336,20 +352,16 @@
     }
   }
 
-  // Wait for Capacitor bridge (native injects it slightly after DOMContentLoaded)
   function start() {
     bindUI();
     renderHistory();
     console.log('Dexo2Scan ready. Platform:', platform(), 'Native:', isNative());
-    console.log('Available plugins:', getCapacitor() && getCapacitor().Plugins ? Object.keys(getCapacitor().Plugins) : 'none');
+    console.log('Plugins:', getCapacitor() && getCapacitor().Plugins ? Object.keys(getCapacitor().Plugins) : 'none');
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () {
-      // Give native bridge a moment on cold start
-      setTimeout(start, 100);
-    });
+    document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 150); });
   } else {
-    setTimeout(start, 100);
+    setTimeout(start, 150);
   }
 })();
